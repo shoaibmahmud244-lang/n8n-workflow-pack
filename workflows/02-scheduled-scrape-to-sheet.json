@@ -1,0 +1,232 @@
+{
+  "name": "Scheduled Web Scrape to Sheet with Change Detection",
+  "meta": {
+    "instanceId": "scrape-to-sheet",
+    "description": "Cron -> scrape a public sandbox site -> normalise -> diff against a Postgres snapshot -> append only new/changed rows -> log the run. Credentialed nodes ship disabled."
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "tags": [],
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000001",
+      "name": "Every 6 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://books.toscrape.com/catalogue/page-1.html",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept-Language",
+              "value": "en-GB,en;q=0.9"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          }
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000002",
+      "name": "Fetch Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -340,
+        300
+      ],
+      "notes": "books.toscrape.com is a public sandbox built for scraping practice. Respect robots.txt and any target's terms in real work."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse one catalogue page into normalised rows.\n//\n// Every field is coerced explicitly. A scraper that trusts the page shape\n// silently produces plausible wrong numbers when the markup shifts, which is\n// the single most common cause of bad downstream data.\n\nconst items = $input.first().json.data ?? [];\nconst rows = items.map(it => {\n  const priceText = (it.price || '').replace(/[^0-9.]/g, '');\n  const price = priceText ? Number(priceText) : null;\n\n  return {\n    json: {\n      title: (it.title || '').trim(),\n      // Stable key for change detection. URL is better than title: titles get\n      // edited, URLs do not.\n      url: it.url || '',\n      price: Number.isFinite(price) ? price : null,\n      // Flag rather than drop a bad price, so the row count stays reconcilable\n      // against the page and a missing price is visible instead of invisible.\n      price_ok: Number.isFinite(price),\n      availability: (it.availability || '').trim(),\n      rating: it.rating || null,\n      scraped_at: new Date().toISOString()\n    }\n  };\n});\n\nif (rows.length === 0) {\n  throw new Error('Selector matched 0 items \u2014 the page shape probably changed. Refusing to write an empty result set.');\n}\n\nreturn rows;",
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000003",
+      "name": "Parse + Normalise",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT url, price, availability FROM scrape_snapshot WHERE url IN ($1) LIMIT 1000;",
+        "options": {
+          "queryReplacement": "={{ JSON.stringify($json.url) }}"
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000004",
+      "name": "Load Previous Snapshot",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        100,
+        300
+      ],
+      "notes": "Disabled: needs a Postgres credential. Enable this one FIRST \u2014 the diff node reads from it, so if it is disabled the diff has no previous state and treats every row as new.",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Change detection: emit only rows that are new or whose price moved.\n//\n// Re-appending the full page every run would duplicate the sheet and cost\n// quota for no new information. This is the difference between a scraper that\n// runs and one that is cheap to run.\n\nconst previous = new Map();\nfor (const item of $input.all()) {\n  const r = item.json;\n  if (r && r.url) previous.set(r.url, r);\n}\n\nconst current = $('Parse + Normalise').all();\n\nlet unchanged = 0;\nconst changes = [];\n\nfor (const item of current) {\n  const row = item.json;\n  const prior = previous.get(row.url);\n\n  if (!prior) {\n    changes.push({ json: { change: 'new', ...row } });\n    continue;\n  }\n\n  if (Number(prior.price) !== Number(row.price) || prior.availability !== row.availability) {\n    changes.push({\n      json: {\n        change: 'updated',\n        old_price: Number(prior.price),\n        new_price: row.price,\n        old_availability: prior.availability,\n        new_availability: row.availability,\n        ...row\n      }\n    });\n    continue;\n  }\n\n  unchanged++;\n}\n\nconsole.log(`scraped=${current.length} changed=${changes.length} unchanged=${unchanged}`);\n\nreturn changes.length ? changes : [{\n  json: { change: 'none', checked: current.length, unchanged }\n}];",
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000005",
+      "name": "Diff Against Snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "resource": "sheet",
+        "documentId": "REPLACE_WITH_YOUR_SHEET_ID",
+        "sheetName": "PriceChanges",
+        "value": "={{ $json }}",
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000006",
+      "name": "Append Changes",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        540,
+        300
+      ],
+      "notes": "Disabled: needs a Google credential.",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO scrape_snapshot (url, price, availability, rating, scraped_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (url) DO UPDATE SET price = EXCLUDED.price, availability = EXCLUDED.availability, rating = EXCLUDED.rating, scraped_at = EXCLUDED.scraped_at;",
+        "options": {
+          "queryReplacement": "={{ $json.url }}, {{ $json.price }}, {{ $json.availability }}, {{ $json.rating }}, {{ $json.scraped_at }}"
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000007",
+      "name": "Upsert Snapshot",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        540,
+        500
+      ],
+      "notes": "Disabled: needs a Postgres credential. ON CONFLICT makes the run idempotent, so a re-run cannot duplicate rows.",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "content": "## Scheduled Scrape -> Sheet\n\n**Polls every 6h, writes only what changed.**\n\n1. `Every 6 Hours` \u2014 cron\n2. `Fetch Page` \u2014 one catalogue page\n3. `Parse + Normalise` \u2014 coerces every field; **throws on 0 items**\n4. `Load Previous Snapshot` \u2014 Postgres\n5. `Diff Against Snapshot` \u2014 new or price/availability moved\n6. `Append Changes` / `Upsert Snapshot`\n\n### Why the throw on 0 items\nA selector that stops matching returns nothing. Written to a sheet,\nthat looks like \"nothing changed this week\" \u2014 which is indistinguishable from a working scraper that legitimately found no changes. Throwing makes the distinction visible.\n\n### Why diff, not full re-append\nRe-appending every 6h duplicates the sheet and burns quota for no new information. This is what makes the job cheap to leave running.\n\n### Schema\n```sql\nCREATE TABLE scrape_snapshot (\n  url          TEXT PRIMARY KEY,\n  price        NUMERIC,\n  availability TEXT,\n  rating       NUMERIC,\n  scraped_at   TIMESTAMPTZ\n);\n```",
+        "height": 500,
+        "width": 460,
+        "color": 4
+      },
+      "id": "b2000000-0000-4000-8000-000000000008",
+      "name": "SETUP NOTE",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -160
+      ]
+    }
+  ],
+  "connections": {
+    "Every 6 Hours": {
+      "main": [
+        [
+          {
+            "node": "Fetch Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Page": {
+      "main": [
+        [
+          {
+            "node": "Parse + Normalise",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse + Normalise": {
+      "main": [
+        [
+          {
+            "node": "Load Previous Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Previous Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Diff Against Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Diff Against Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Append Changes",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Upsert Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {}
+}

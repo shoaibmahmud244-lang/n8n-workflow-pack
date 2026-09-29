@@ -1,0 +1,181 @@
+{
+  "name": "Form Intake to CRM with Validation and Auto-reply",
+  "meta": {
+    "instanceId": "form-intake-crm",
+    "description": "Public form webhook -> validate -> reject bad records -> append to Sheets -> auto-reply -> CRM upsert. Every credential-dependent node ships disabled so the workflow imports and runs with zero secrets."
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "errorWorkflow": ""
+  },
+  "tags": [],
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-intake",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Form Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-320, 300],
+      "webhookId": "form-intake-lead"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Validate and normalise a lead. Rejects incomplete records\n// instead of forwarding garbage into the CRM.\n//\n// Returns one item per input with `ok` set. The If node downstream splits\n// accepted from rejected, so a bad email never reaches Sheets or HubSpot.\n\nconst results = [];\n\nfor (const item of $input.all()) {\n  // Webhook delivers the POST body under `body`; guard for direct/manual runs.\n  const p = item.json.body || item.json || {};\n\n  const rawEmail = (p.email || '').trim();\n  const emailOk = /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(rawEmail);\n  const name = (p.name || '').trim();\n  const message = (p.message || '').trim();\n\n  const reasons = [];\n  if (!emailOk) reasons.push('invalid email');\n  if (!name)       reasons.push('missing name');\n  if (!message)    reasons.push('missing message');\n\n  const parts = name.split(/\\s+/);\n\n  results.push({\n    json: {\n      ok: reasons.length === 0,\n      reject_reason: reasons.length ? reasons.join(', ') : null,\n      email: rawEmail.toLowerCase(),\n      firstname: parts[0] || '',\n      // Everything after the first token is the surname, so\n      // \"Ada Byron King\" does not become lastname=\"Byron\".\n      lastname: parts.slice(1).join(' ') || '',\n      // Bound the free-text field so a pasted document cannot bloat the sheet.\n      message: message.slice(0, 500),\n      submitted_at: new Date().toISOString(),\n      lead_source: 'form'\n    }\n  });\n}\n\nreturn results;",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Validate + Split Name",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-100, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-ok-true",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Accepted?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [120, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Rejection sink. Rejected records are logged rather than silently\n// dropped so a form break is visible instead of invisible.\n\nconst rejected = $input.all()\n  .map(i => i.json.reject_reason || 'unknown')\n  .reduce((acc, r) => {\n    acc[r] = (acc[r] || 0) + 1;\n    return acc;\n  }, {});\n\nconsole.log('REJECTED LEADS:', JSON.stringify(rejected));\n\nreturn $input.all().map(i => ({\n  json: {\n    rejected: true,\n    reason: i.json.reject_reason,\n    email_attempted: i.json.email\n  }\n}));",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Log Rejected",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [120, 520]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "resource": "sheet",
+        "documentId": "REPLACE_WITH_YOUR_SHEET_ID",
+        "sheetName": "Leads",
+        "columns": {},
+        "value": "={{ $json }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "Sheets Append",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [340, 220],
+      "notes": "Disabled: needs a Google credential + a real sheet id. Enable and set documentId after connecting credentials.",
+      "disabled": true,
+      "continueOnFail": false
+    },
+    {
+      "parameters": {
+        "sendToAll": false,
+        "emailType": "to",
+        "to": "={{ $json.email }}",
+        "subject": "We received your message",
+        "emailFormat": "html",
+        "htmlBody": "<p>Hi {{ $json.firstname }},</p>\n<p>Thanks for getting in touch. We have your message and someone will reply shortly.</p>\n<p>— the team</p>",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "Auto-reply",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [340, 60],
+      "notes": "Disabled: needs a Gmail credential. Note the original exported workflow had a subject and recipient but no body, so it would have sent an empty message.",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "upsert",
+        "updateFields": "email,firstname,lastname",
+        "additionalFields": {
+          "values": [
+            {
+              "name": "message",
+              "value": "={{ $json.message }}"
+            },
+            {
+              "name": "lead_source",
+              "value": "={{ $json.lead_source }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000007",
+      "name": "CRM Upsert",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.1,
+      "position": [340, 380],
+      "notes": "Disabled: needs a HubSpot credential. Upsert (not create) so a resubmitted form updates the existing contact instead of creating a duplicate.",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "content": "## Form Intake -> CRM\n\n**Runs with zero secrets.** Only the three credentialed\nnodes (Sheets, Gmail, HubSpot) ship disabled.\n\n1. `POST /webhook/lead-intake` with `{name, email, message}`\n2. Validate rejects bad email / missing name / missing message\n3. `Accepted?` splits valid from rejected\n4. Rejected are logged, never forwarded\n5. Sheets append / Gmail reply / HubSpot upsert\n\n**Enable order:** connect credentials, set the real sheet id,\nthen enable one node at a time and test.\n\n**Upsert, not create** — a resubmitted form updates the contact\nrather than creating a duplicate.",
+        "height": 460,
+        "width": 420,
+        "color": 5
+      },
+      "id": "a1000000-0000-4000-8000-000000000008",
+      "name": "SETUP NOTE",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-320, -120]
+    }
+  ],
+  "connections": {
+    "Form Webhook": {
+      "main": [[{ "node": "Validate + Split Name", "type": "main", "index": 0 }]]
+    },
+    "Validate + Split Name": {
+      "main": [[{ "node": "Accepted?", "type": "main", "index": 0 }]]
+    },
+    "Accepted?": {
+      "main": [
+        [{ "node": "Auto-reply", "type": "main", "index": 0 }],
+        [{ "node": "Log Rejected", "type": "main", "index": 0 }]
+      ]
+    },
+    "Auto-reply": {
+      "main": [[{ "node": "Sheets Append", "type": "main", "index": 0 }]]
+    },
+    "Sheets Append": {
+      "main": [[{ "node": "CRM Upsert", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {}
+}
