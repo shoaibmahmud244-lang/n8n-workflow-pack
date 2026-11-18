@@ -65,7 +65,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Parse one catalogue page into normalised rows.\n//\n// Every field is coerced explicitly. A scraper that trusts the page shape\n// silently produces plausible wrong numbers when the markup shifts, which is\n// the single most common cause of bad downstream data.\n\nconst items = $input.first().json.data ?? [];\nconst rows = items.map(it => {\n  const priceText = (it.price || '').replace(/[^0-9.]/g, '');\n  const price = priceText ? Number(priceText) : null;\n\n  return {\n    json: {\n      title: (it.title || '').trim(),\n      // Stable key for change detection. URL is better than title: titles get\n      // edited, URLs do not.\n      url: it.url || '',\n      price: Number.isFinite(price) ? price : null,\n      // Flag rather than drop a bad price, so the row count stays reconcilable\n      // against the page and a missing price is visible instead of invisible.\n      price_ok: Number.isFinite(price),\n      availability: (it.availability || '').trim(),\n      rating: it.rating || null,\n      scraped_at: new Date().toISOString()\n    }\n  };\n});\n\nif (rows.length === 0) {\n  throw new Error('Selector matched 0 items \u2014 the page shape probably changed. Refusing to write an empty result set.');\n}\n\nreturn rows;",
+        "jsCode": "// Parse one catalogue page into normalised rows.\n// Handles both raw HTML from Fetch Page (string in $json.data) and structured arrays.\n\nconst payload = $input.first().json.data ?? [];\nlet rawItems = [];\n\nif (typeof payload === \"string\") {\n  const podRegex = /<article class=\"product_pod\">([\\s\\S]*?)<\\/article>/g;\n  let match;\n  while ((match = podRegex.exec(payload)) !== null) {\n    const block = match[1];\n    const titleMatch = block.match(/<h3[^>]*>\\s*<a[^>]*title=\"([^\"]+)\"/);\n    const urlMatch = block.match(/<h3[^>]*>\\s*<a[^>]*href=\"([^\"]+)\"/);\n    const priceMatch = block.match(/class=\"price_color\"[^>]*>([^<]+)</);\n    const availMatch = block.match(/class=\"instock availability\"[^>]*>([\\s\\S]*?)<\\/p>/);\n    const ratingMatch = block.match(/class=\"star-rating\\s+([A-Za-z]+)\"/);\n    const ratingMap = { One: 1, Two: 2, Three: 3, Four: 4, Five: 5 };\n    rawItems.push({\n      title: titleMatch ? titleMatch[1] : \"\",\n      url: urlMatch ? `https://books.toscrape.com/catalogue/${urlMatch[1].replace(/^catalogue\\//, \"\")}` : \"\",\n      price: priceMatch ? priceMatch[1] : \"\",\n      availability: availMatch ? availMatch[1].replace(/\\s+/g, \" \").trim() : \"\",\n      rating: ratingMatch ? (ratingMap[ratingMatch[1]] ?? null) : null\n    });\n  }\n} else if (Array.isArray(payload)) {\n  rawItems = payload;\n}\n\nconst rows = rawItems.map(it => {\n  const priceText = String(it.price || \"\").replace(/[^0-9.]/g, \"\");\n  const price = priceText ? Number(priceText) : null;\n\n  return {\n    json: {\n      title: String(it.title || \"\").trim(),\n      url: String(it.url || \"\").trim(),\n      price: Number.isFinite(price) ? price : null,\n      price_ok: Number.isFinite(price),\n      availability: String(it.availability || \"\").trim(),\n      rating: it.rating ?? null,\n      scraped_at: new Date().toISOString()\n    }\n  };\n});\n\nif (rows.length === 0) {\n  throw new Error(\"Selector matched 0 items \u2014 the page shape probably changed. Refusing to write an empty result set.\");\n}\n\nreturn rows;",
         "options": {}
       },
       "id": "b2000000-0000-4000-8000-000000000003",
@@ -80,10 +80,8 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT url, price, availability FROM scrape_snapshot WHERE url IN ($1) LIMIT 1000;",
-        "options": {
-          "queryReplacement": "={{ JSON.stringify($json.url) }}"
-        }
+        "query": "SELECT url, price, availability FROM scrape_snapshot LIMIT 1000;",
+        "options": {}
       },
       "id": "b2000000-0000-4000-8000-000000000004",
       "name": "Load Previous Snapshot",
@@ -94,7 +92,8 @@
         300
       ],
       "notes": "Disabled: needs a Postgres credential. Enable this one FIRST \u2014 the diff node reads from it, so if it is disabled the diff has no previous state and treats every row as new.",
-      "disabled": true
+      "disabled": true,
+      "executeOnce": true
     },
     {
       "parameters": {
