@@ -28,13 +28,14 @@ the id it asks for, enable the node, test that node alone.
 
 ## Workflow 1 — form intake to CRM
 
-```
-POST /webhook/lead-intake  {name, email, message}
-        │
-        ▼
-Validate + Split Name ──► Accepted?
-        │                   ├─ true  ──► Auto-reply ──► Sheets Append ──► CRM Upsert
-        │                   └─ false ──► Log Rejected
+```mermaid
+flowchart LR
+    A["POST /webhook/lead-intake\n{name, email, message}"] --> B["Validate + Split Name"]
+    B --> C{"Accepted?"}
+    C -->|true| D["Auto-Reply Email"]
+    D --> E["Google Sheets Append"]
+    E --> F["HubSpot CRM Upsert"]
+    C -->|false| G["Log Rejected Audit"]
 ```
 
 **Design decisions worth pointing at:**
@@ -54,15 +55,14 @@ Validate + Split Name ──► Accepted?
 
 ## Workflow 2 — scheduled scrape to sheet
 
-```
-Every 6 Hours ──► Fetch Page ──► Parse + Normalise ──► Load Previous Snapshot
-                                                            │
-                                                            ▼
-                                                    Diff Against Snapshot
-                                                            │
-                                              ┌─────────────┴─────────────┐
-                                              ▼                           ▼
-                                     Append Changes              Upsert Snapshot
+```mermaid
+flowchart LR
+    A["Cron: Every 6 Hours"] --> B["Fetch Target Page"]
+    B --> C["Parse + Normalise"]
+    C --> D["Load Previous Snapshot"]
+    D --> E{"Diff Against Snapshot"}
+    E -->|New / Changed| F["Append Changes to Sheet"]
+    E -->|Update Cache| G["Postgres Idempotent Upsert"]
 ```
 
 **Two decisions that separate a scraper that works from one that's cheap to run:**
