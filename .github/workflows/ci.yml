@@ -19,4 +19,4 @@ jobs:
       - name: Validate workflows script
         run: python3 validate_workflows.py
       - name: Unit tests (pytest)
-        run: pytest -v
+        run: PYTHONPATH=. pytest -v
