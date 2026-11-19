@@ -28,7 +28,7 @@
     },
     {
       "parameters": {
-        "functionCode": "// Validate and normalise a lead. Rejects incomplete records\n// instead of forwarding garbage into the CRM.\n//\n// Returns one item per input with `ok` set. The If node downstream splits\n// accepted from rejected, so a bad email never reaches Sheets or HubSpot.\n\nconst results = [];\n\nfor (const item of $input.all()) {\n  // Webhook delivers the POST body under `body`; guard for direct/manual runs.\n  const p = item.json.body || item.json || {};\n\n  const rawEmail = (p.email || '').trim();\n  const emailOk = /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(rawEmail);\n  const name = (p.name || '').trim();\n  const message = (p.message || '').trim();\n\n  const reasons = [];\n  if (!emailOk) reasons.push('invalid email');\n  if (!name)       reasons.push('missing name');\n  if (!message)    reasons.push('missing message');\n\n  const parts = name.split(/\\s+/);\n\n  results.push({\n    json: {\n      ok: reasons.length === 0,\n      reject_reason: reasons.length ? reasons.join(', ') : null,\n      email: rawEmail.toLowerCase(),\n      firstname: parts[0] || '',\n      // Everything after the first token is the surname, so\n      // \"Ada Byron King\" does not become lastname=\"Byron\".\n      lastname: parts.slice(1).join(' ') || '',\n      // Bound the free-text field so a pasted document cannot bloat the sheet.\n      message: message.slice(0, 500),\n      submitted_at: new Date().toISOString(),\n      lead_source: 'form'\n    }\n  });\n}\n\nreturn results;",
+        "jsCode": "// Validate and normalise a lead. Rejects incomplete records\n// instead of forwarding garbage into the CRM.\n//\n// Returns one item per input with `ok` set. The If node downstream splits\n// accepted from rejected, so a bad email never reaches Sheets or HubSpot.\n\nconst results = [];\n\nfor (const item of $input.all()) {\n  // Webhook delivers the POST body under `body`; guard for direct/manual runs.\n  const p = item.json.body || item.json || {};\n\n  const rawEmail = (p.email || '').trim();\n  const emailOk = /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(rawEmail);\n  const name = (p.name || '').trim();\n  const message = (p.message || '').trim();\n\n  const reasons = [];\n  if (!emailOk) reasons.push('invalid email');\n  if (!name)       reasons.push('missing name');\n  if (!message)    reasons.push('missing message');\n\n  const parts = name.split(/\\s+/);\n\n  results.push({\n    json: {\n      ok: reasons.length === 0,\n      reject_reason: reasons.length ? reasons.join(', ') : null,\n      email: rawEmail.toLowerCase(),\n      firstname: parts[0] || '',\n      // Everything after the first token is the surname, so\n      // \"Ada Byron King\" does not become lastname=\"Byron\".\n      lastname: parts.slice(1).join(' ') || '',\n      // Bound the free-text field so a pasted document cannot bloat the sheet.\n      message: message.slice(0, 500),\n      submitted_at: new Date().toISOString(),\n      lead_source: 'form'\n    }\n  });\n}\n\nreturn results;",
         "options": {}
       },
       "id": "a1000000-0000-4000-8000-000000000002",
@@ -112,8 +112,8 @@
       "name": "Auto-reply",
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.1,
-      "position": [340, 60],
-      "notes": "Disabled: needs a Gmail credential. Note the original exported workflow had a subject and recipient but no body, so it would have sent an empty message.",
+      "position": [780, 220],
+      "notes": "Disabled: needs a Gmail credential. Triggered only after data is safely persisted in Sheets and CRM.",
       "disabled": true
     },
     {
@@ -139,13 +139,13 @@
       "name": "CRM Upsert",
       "type": "n8n-nodes-base.hubspot",
       "typeVersion": 2.1,
-      "position": [340, 380],
+      "position": [560, 220],
       "notes": "Disabled: needs a HubSpot credential. Upsert (not create) so a resubmitted form updates the existing contact instead of creating a duplicate.",
       "disabled": true
     },
     {
       "parameters": {
-        "content": "## Form Intake -> CRM\n\n**Runs with zero secrets.** Only the three credentialed\nnodes (Sheets, Gmail, HubSpot) ship disabled.\n\n1. `POST /webhook/lead-intake` with `{name, email, message}`\n2. Validate rejects bad email / missing name / missing message\n3. `Accepted?` splits valid from rejected\n4. Rejected are logged, never forwarded\n5. Sheets append / Gmail reply / HubSpot upsert\n\n**Enable order:** connect credentials, set the real sheet id,\nthen enable one node at a time and test.\n\n**Upsert, not create** — a resubmitted form updates the contact\nrather than creating a duplicate.",
+        "content": "## Form Intake -> CRM\n\n**Runs with zero secrets.** Only the three credentialed\nnodes (Sheets, Gmail, HubSpot) ship disabled.\n\n1. `POST /webhook/lead-intake` with `{name, email, message}`\n2. Validate rejects bad email / missing name / missing message\n3. `Accepted?` splits valid from rejected\n4. Rejected are logged, never forwarded\n5. Sheets append -> CRM upsert -> Gmail auto-reply (persists before emailing)\n\n**Enable order:** connect credentials, set the real sheet id,\nthen enable one node at a time and test.\n\n**Upsert, not create** — a resubmitted form updates the contact\nrather than creating a duplicate.",
         "height": 460,
         "width": 420,
         "color": 5
@@ -166,15 +166,15 @@
     },
     "Accepted?": {
       "main": [
-        [{ "node": "Auto-reply", "type": "main", "index": 0 }],
+        [{ "node": "Sheets Append", "type": "main", "index": 0 }],
         [{ "node": "Log Rejected", "type": "main", "index": 0 }]
       ]
     },
-    "Auto-reply": {
-      "main": [[{ "node": "Sheets Append", "type": "main", "index": 0 }]]
-    },
     "Sheets Append": {
       "main": [[{ "node": "CRM Upsert", "type": "main", "index": 0 }]]
+    },
+    "CRM Upsert": {
+      "main": [[{ "node": "Auto-reply", "type": "main", "index": 0 }]]
     }
   },
   "pinData": {}

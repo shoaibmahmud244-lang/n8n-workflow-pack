@@ -77,6 +77,14 @@ def check(path: Path) -> list[str]:
                 "ship it disabled so the workflow imports without secrets"
             )
 
+        if node.get("type") == "n8n-nodes-base.code" and float(node.get("typeVersion", 1)) >= 2:
+            params = node.get("parameters", {})
+            if "functionCode" in params:
+                problems.append(
+                    f"node {name!r} is n8n-nodes-base.code v2+ but uses deprecated 'functionCode' "
+                    "instead of 'jsCode' (ignored by n8n 2.x)"
+                )
+
     for src, conn in wf["connections"].items():
         if src not in names:
             problems.append(f"connection source {src!r} is not a node")

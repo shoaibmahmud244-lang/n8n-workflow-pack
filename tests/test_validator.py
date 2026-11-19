@@ -44,6 +44,19 @@ def test_validator_catches_orphan_node(tmp_path: Path) -> None:
     assert any("nodes unreachable from any trigger" in p for p in problems)
 
 
+def test_validator_catches_deprecated_function_code_in_v2_code_node(tmp_path: Path) -> None:
+    wf = json.loads((WORKFLOWS / "01-form-intake-to-crm.json").read_text("utf-8"))
+    for node in wf["nodes"]:
+        if node.get("type") == "n8n-nodes-base.code":
+            node["parameters"] = {"functionCode": "return [];"}
+            break
+    bad_file = tmp_path / "deprecated_code.json"
+    bad_file.write_text(json.dumps(wf), encoding="utf-8")
+
+    problems = check(bad_file)
+    assert any("uses deprecated 'functionCode' instead of 'jsCode'" in p for p in problems)
+
+
 def test_lead_intake_idempotent_upsert(tmp_path: Path) -> None:
     subs = tmp_path / "subs.json"
     crm = tmp_path / "crm.csv"

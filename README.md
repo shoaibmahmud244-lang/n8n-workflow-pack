@@ -32,9 +32,9 @@ the id it asks for, enable the node, test that node alone.
 flowchart LR
     A["POST /webhook/lead-intake\n{name, email, message}"] --> B["Validate + Split Name"]
     B --> C{"Accepted?"}
-    C -->|true| D["Auto-Reply Email"]
-    D --> E["Google Sheets Append"]
-    E --> F["HubSpot CRM Upsert"]
+    C -->|true| D["Google Sheets Append"]
+    D --> E["HubSpot CRM Upsert"]
+    E --> F["Auto-Reply Email"]
     C -->|false| G["Log Rejected Audit"]
 ```
 
